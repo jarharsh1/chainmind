@@ -4,4 +4,6 @@ langchain-community==0.2.16
 langchain-openai==0.1.25
 python-dotenv==1.0.1
 faker==25.0.0
-pandas==2.2.2
+openai>=1.0.0
+fastapi>=0.110.0
+uvicorn>=0.29.0
