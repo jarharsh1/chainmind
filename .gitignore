@@ -1,0 +1,7 @@
+venv/
+.env
+__pycache__/
+*.pyc
+data/supply_chain_data.json
+node_modules/
+.next/
