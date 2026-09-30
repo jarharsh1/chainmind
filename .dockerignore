@@ -1,0 +1,11 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+tests
+frontend
+data/supply_chain_data.json
+.ruff_cache
+.pytest_cache
