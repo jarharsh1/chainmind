@@ -6,20 +6,24 @@ to the LLM on every query, we classify the question and send only
 the relevant subset. 70-85% token savings.
 """
 
-# Full schema definition — this is what Neo4j has
+# Full schema definition — this is what Neo4j has. Keep in sync with
+# data/generate_data.py (the loader writes exactly these properties).
 FULL_SCHEMA = {
     "nodes": {
-        "Supplier": ["id", "name", "country", "on_time_delivery_pct", "lead_time_days"],
-        "Component": ["id", "name", "category", "unit_cost", "criticality"],
+        "Supplier": ["id", "name", "country", "region", "tier",
+                     "on_time_delivery_pct", "lead_time_days", "lead_time_variance"],
+        "Component": ["id", "name", "category", "unit_cost", "criticality", "alt_supplier_count"],
         "Product": ["id", "name", "category", "price"],
-        "Warehouse": ["id", "name", "city", "country", "capacity"],
+        "Warehouse": ["id", "name", "city", "country", "capacity", "utilization_pct"],
         "Retailer": ["id", "name", "city", "country", "type"],
     },
     "relationships": {
-        "SUPPLIES": {"from": "Supplier", "to": "Component", "properties": ["volume_per_month"]},
+        "SUPPLIES": {"from": "Supplier", "to": "Component",
+                     "properties": ["volume_per_month", "unit_price", "lead_time_days"]},
         "USED_IN": {"from": "Component", "to": "Product", "properties": ["quantity"]},
         "STORED_AT": {"from": "Product", "to": "Warehouse", "properties": ["stock_quantity"]},
-        "SHIPS_TO": {"from": "Warehouse", "to": "Retailer", "properties": ["mode", "cost_per_unit", "transit_days"]},
+        "SHIPS_TO": {"from": "Warehouse", "to": "Retailer",
+                     "properties": ["mode", "cost_per_unit", "transit_days"]},
     }
 }
 

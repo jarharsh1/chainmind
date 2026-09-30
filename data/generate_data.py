@@ -1,266 +1,369 @@
+"""
+Synthetic supply-chain data generator for ChainMind.
+
+Deterministic (fixed seed) so the graph is identical on every run and demo
+questions always return the same answers. Emits a richer graph than the original
+hand-written one, with:
+
+  - deliberate SINGLE-SOURCE risks on critical components (great "risk" queries)
+  - multi-sourcing with differing price / lead time / volume per supplier
+  - richer attributes (supplier region + tier, component alt_supplier_count,
+    warehouse utilization, per-edge unit price)
+  - a couple of intentional bottlenecks (a near-full warehouse; a retailer
+    served by a single warehouse)
+
+Recognizable "hero" entities (Taiwan Semiconductor Co, Galaxy Ultra X,
+Flipkart India, ...) are kept so the README sample questions resolve.
+
+Emitted counts (see the summary printed at the end):
+  ~48 suppliers · ~70 components · ~24 products · 10 warehouses · 12 retailers
+"""
+
 import json
+import os
 import random
-from collections import Counter
+from collections import Counter, defaultdict
 
 random.seed(42)
 
-# ============ SUPPLIERS ============
-suppliers = [
-    {"id": "SUP-001", "name": "ShenZhen MicroTech", "country": "China", "on_time_delivery_pct": 92, "lead_time_days": 14},
-    {"id": "SUP-002", "name": "Taiwan Semiconductor Co", "country": "Taiwan", "on_time_delivery_pct": 97, "lead_time_days": 21},
-    {"id": "SUP-003", "name": "Seoul ChipWorks", "country": "South Korea", "on_time_delivery_pct": 95, "lead_time_days": 18},
-    {"id": "SUP-004", "name": "Mumbai Electronics Ltd", "country": "India", "on_time_delivery_pct": 85, "lead_time_days": 12},
-    {"id": "SUP-005", "name": "Stuttgart Precision GmbH", "country": "Germany", "on_time_delivery_pct": 98, "lead_time_days": 25},
-    {"id": "SUP-006", "name": "Osaka Display Corp", "country": "Japan", "on_time_delivery_pct": 96, "lead_time_days": 20},
-    {"id": "SUP-007", "name": "Bangkok Components", "country": "Thailand", "on_time_delivery_pct": 88, "lead_time_days": 15},
-    {"id": "SUP-008", "name": "Hanoi Battery Systems", "country": "Vietnam", "on_time_delivery_pct": 84, "lead_time_days": 10},
-    {"id": "SUP-009", "name": "Guadalajara Assemblies", "country": "Mexico", "on_time_delivery_pct": 87, "lead_time_days": 8},
-    {"id": "SUP-010", "name": "Penang Silicon Works", "country": "Malaysia", "on_time_delivery_pct": 91, "lead_time_days": 16},
-    {"id": "SUP-011", "name": "Helsinki Sensor Tech", "country": "Finland", "on_time_delivery_pct": 99, "lead_time_days": 28},
-    {"id": "SUP-012", "name": "Dongguan Power Systems", "country": "China", "on_time_delivery_pct": 86, "lead_time_days": 11},
+# --------------------------------------------------------------------------- #
+# Reference pools
+# --------------------------------------------------------------------------- #
+COUNTRY_REGION = {
+    "China": "APAC", "Taiwan": "APAC", "South Korea": "APAC", "Japan": "APAC",
+    "India": "APAC", "Thailand": "APAC", "Vietnam": "APAC", "Malaysia": "APAC",
+    "Singapore": "APAC", "Germany": "EMEA", "Finland": "EMEA", "Ireland": "EMEA",
+    "Israel": "EMEA", "USA": "AMER", "Mexico": "AMER", "Brazil": "AMER",
+}
+CITY_BY_COUNTRY = {
+    "China": ["Shenzhen", "Dongguan", "Suzhou"], "Taiwan": ["Hsinchu", "Taipei"],
+    "South Korea": ["Seoul", "Incheon"], "Japan": ["Osaka", "Tokyo"],
+    "India": ["Mumbai", "Bengaluru", "Chennai"], "Thailand": ["Bangkok"],
+    "Vietnam": ["Hanoi", "Da Nang"], "Malaysia": ["Penang"], "Singapore": ["Singapore"],
+    "Germany": ["Stuttgart", "Dresden"], "Finland": ["Helsinki"], "Ireland": ["Dublin"],
+    "Israel": ["Haifa"], "USA": ["Austin", "Phoenix"], "Mexico": ["Guadalajara"],
+    "Brazil": ["Manaus"],
+}
+SUPPLIER_SUFFIX = [
+    "MicroTech", "Semiconductor Co", "ChipWorks", "Electronics Ltd", "Precision GmbH",
+    "Display Corp", "Components", "Battery Systems", "Assemblies", "Silicon Works",
+    "Sensor Tech", "Power Systems", "Optics", "Fabrication", "Circuits", "Modules Inc",
 ]
-
-# ============ COMPONENTS ============
-components = [
-    {"id": "CMP-001", "name": "A14 Processor", "category": "Chipset", "unit_cost": 45.00, "criticality": "high"},
-    {"id": "CMP-002", "name": "M2 SoC", "category": "Chipset", "unit_cost": 72.00, "criticality": "high"},
-    {"id": "CMP-003", "name": "Snapdragon 8 Gen 3", "category": "Chipset", "unit_cost": 55.00, "criticality": "high"},
-    {"id": "CMP-004", "name": "6.7 inch AMOLED Panel", "category": "Display", "unit_cost": 38.00, "criticality": "high"},
-    {"id": "CMP-005", "name": "15.6 inch IPS LCD", "category": "Display", "unit_cost": 52.00, "criticality": "medium"},
-    {"id": "CMP-006", "name": "10.9 inch Retina Display", "category": "Display", "unit_cost": 48.00, "criticality": "high"},
-    {"id": "CMP-007", "name": "5000mAh Li-Po Cell", "category": "Battery", "unit_cost": 8.50, "criticality": "medium"},
-    {"id": "CMP-008", "name": "8000mAh Li-Po Cell", "category": "Battery", "unit_cost": 12.00, "criticality": "medium"},
-    {"id": "CMP-009", "name": "100Wh Laptop Battery", "category": "Battery", "unit_cost": 22.00, "criticality": "medium"},
-    {"id": "CMP-010", "name": "8GB LPDDR5 RAM", "category": "Memory", "unit_cost": 18.00, "criticality": "high"},
-    {"id": "CMP-011", "name": "16GB LPDDR5 RAM", "category": "Memory", "unit_cost": 32.00, "criticality": "high"},
-    {"id": "CMP-012", "name": "256GB NVMe SSD", "category": "Storage", "unit_cost": 15.00, "criticality": "medium"},
-    {"id": "CMP-013", "name": "512GB NVMe SSD", "category": "Storage", "unit_cost": 25.00, "criticality": "medium"},
-    {"id": "CMP-014", "name": "50MP Camera Module", "category": "Sensor", "unit_cost": 14.00, "criticality": "medium"},
-    {"id": "CMP-015", "name": "WiFi 7 Module", "category": "Connectivity", "unit_cost": 9.00, "criticality": "high"},
-    {"id": "CMP-016", "name": "5G Modem Chip", "category": "Connectivity", "unit_cost": 28.00, "criticality": "high"},
-    {"id": "CMP-017", "name": "USB-C Port Assembly", "category": "Connector", "unit_cost": 2.50, "criticality": "low"},
-    {"id": "CMP-018", "name": "Haptic Feedback Motor", "category": "Sensor", "unit_cost": 3.20, "criticality": "low"},
-    {"id": "CMP-019", "name": "Gorilla Glass 7 Panel", "category": "Display", "unit_cost": 11.00, "criticality": "medium"},
-    {"id": "CMP-020", "name": "1TB NVMe SSD", "category": "Storage", "unit_cost": 42.00, "criticality": "low"},
+COMPONENT_CATEGORIES = [
+    "Chipset", "Display", "Battery", "Memory", "Storage", "Sensor",
+    "Connectivity", "Connector", "Camera", "Audio", "Power", "Cooling",
 ]
+COMPONENT_NAMES = {
+    "Chipset": ["A{n} Processor", "M{n} SoC", "Snapdragon {n} Gen", "Tensor G{n}", "Exynos {n}"],
+    "Display": ["{s}in AMOLED Panel", "{s}in IPS LCD", "{s}in Retina Display", "{s}in OLED Panel"],
+    "Battery": ["{n}mAh Li-Po Cell", "{n}Wh Laptop Battery", "{n}mAh Graphene Cell"],
+    "Memory": ["{n}GB LPDDR5 RAM", "{n}GB DDR5 RAM", "{n}GB LPDDR5X RAM"],
+    "Storage": ["{n}GB NVMe SSD", "{n}TB NVMe SSD", "{n}GB UFS Storage"],
+    "Sensor": ["Haptic Feedback Motor", "Gyroscope Module", "Accelerometer", "LiDAR Scanner"],
+    "Connectivity": ["WiFi {n} Module", "5G Modem Chip", "Bluetooth {n} Chip", "UWB Chip"],
+    "Connector": ["USB-C Port Assembly", "Lightning Port", "HDMI Port", "Audio Jack"],
+    "Camera": ["{n}MP Camera Module", "{n}MP Ultrawide Cam", "ToF Camera", "{n}MP Selfie Cam"],
+    "Audio": ["Stereo Speaker Unit", "Noise-Cancel Mic Array", "Piezo Buzzer"],
+    "Power": ["{n}W Charging IC", "Power Management IC", "Wireless Charge Coil"],
+    "Cooling": ["Vapor Chamber", "Graphite Heat Spreader", "Cooling Fan Module"],
+}
+CRITICAL_CATEGORIES = {"Chipset", "Display", "Memory", "Connectivity"}
 
-# ============ PRODUCTS ============
-products = [
-    {"id": "PRD-001", "name": "Galaxy Ultra X", "category": "Smartphone", "price": 1199.99},
-    {"id": "PRD-002", "name": "iPhone 16 Pro", "category": "Smartphone", "price": 1099.00},
-    {"id": "PRD-003", "name": "Pixel 9", "category": "Smartphone", "price": 799.00},
-    {"id": "PRD-004", "name": "ProBook Laptop 15", "category": "Laptop", "price": 1349.00},
-    {"id": "PRD-005", "name": "AirSlim Ultrabook", "category": "Laptop", "price": 1599.00},
-    {"id": "PRD-006", "name": "Tab Pro 11", "category": "Tablet", "price": 649.00},
-    {"id": "PRD-007", "name": "StudyPad Basic", "category": "Tablet", "price": 329.00},
-    {"id": "PRD-008", "name": "BudsPro Max", "category": "Wearable", "price": 249.00},
-    {"id": "PRD-009", "name": "SmartWatch Ultra", "category": "Wearable", "price": 449.00},
-    {"id": "PRD-010", "name": "HomeHub Display", "category": "Smart Home", "price": 199.00},
-]
-
-# ============ WAREHOUSES ============
-warehouses = [
-    {"id": "WH-001", "name": "ShenZhen Hub", "city": "Shenzhen", "country": "China", "capacity": 50000},
-    {"id": "WH-002", "name": "Dubai Logistics Center", "city": "Dubai", "country": "UAE", "capacity": 30000},
-    {"id": "WH-003", "name": "Rotterdam Port Warehouse", "city": "Rotterdam", "country": "Netherlands", "capacity": 40000},
-    {"id": "WH-004", "name": "LA Distribution Center", "city": "Los Angeles", "country": "USA", "capacity": 45000},
-    {"id": "WH-005", "name": "Singapore Free Trade Zone", "city": "Singapore", "country": "Singapore", "capacity": 25000},
-    {"id": "WH-006", "name": "Mumbai Central Depot", "city": "Mumbai", "country": "India", "capacity": 20000},
-]
-
-# ============ RETAILERS ============
-retailers = [
-    {"id": "RET-001", "name": "TechMart Online", "city": "Global", "country": "Global", "type": "E-commerce"},
-    {"id": "RET-002", "name": "ElectroCity Dubai Mall", "city": "Dubai", "country": "UAE", "type": "Physical Store"},
-    {"id": "RET-003", "name": "Berlin Electronics Hub", "city": "Berlin", "country": "Germany", "type": "Physical Store"},
-    {"id": "RET-004", "name": "BestBuy US", "city": "Multiple", "country": "USA", "type": "Chain Store"},
-    {"id": "RET-005", "name": "Flipkart India", "city": "Bangalore", "country": "India", "type": "E-commerce"},
-    {"id": "RET-006", "name": "JD.com", "city": "Beijing", "country": "China", "type": "E-commerce"},
-    {"id": "RET-007", "name": "Currys UK", "city": "London", "country": "UK", "type": "Chain Store"},
-    {"id": "RET-008", "name": "Croma India", "city": "Mumbai", "country": "India", "type": "Chain Store"},
-]
-
-# ============ RELATIONSHIPS ============
-
-# Supplier → Component (SUPPLIES)
-supplies = [
-    {"supplier_id": "SUP-001", "component_id": "CMP-001", "volume_per_month": 5000},
-    {"supplier_id": "SUP-002", "component_id": "CMP-001", "volume_per_month": 8000},
-    {"supplier_id": "SUP-002", "component_id": "CMP-002", "volume_per_month": 10000},
-    {"supplier_id": "SUP-003", "component_id": "CMP-003", "volume_per_month": 7000},
-    {"supplier_id": "SUP-010", "component_id": "CMP-003", "volume_per_month": 3000},
-    {"supplier_id": "SUP-006", "component_id": "CMP-004", "volume_per_month": 6000},
-    {"supplier_id": "SUP-001", "component_id": "CMP-004", "volume_per_month": 4000},
-    {"supplier_id": "SUP-006", "component_id": "CMP-005", "volume_per_month": 5000},
-    {"supplier_id": "SUP-006", "component_id": "CMP-006", "volume_per_month": 7000},
-    {"supplier_id": "SUP-005", "component_id": "CMP-006", "volume_per_month": 3000},
-    {"supplier_id": "SUP-008", "component_id": "CMP-007", "volume_per_month": 15000},
-    {"supplier_id": "SUP-012", "component_id": "CMP-007", "volume_per_month": 10000},
-    {"supplier_id": "SUP-008", "component_id": "CMP-008", "volume_per_month": 8000},
-    {"supplier_id": "SUP-012", "component_id": "CMP-009", "volume_per_month": 6000},
-    {"supplier_id": "SUP-009", "component_id": "CMP-009", "volume_per_month": 4000},
-    {"supplier_id": "SUP-003", "component_id": "CMP-010", "volume_per_month": 12000},
-    {"supplier_id": "SUP-010", "component_id": "CMP-010", "volume_per_month": 8000},
-    {"supplier_id": "SUP-003", "component_id": "CMP-011", "volume_per_month": 9000},
-    {"supplier_id": "SUP-002", "component_id": "CMP-011", "volume_per_month": 5000},
-    {"supplier_id": "SUP-010", "component_id": "CMP-012", "volume_per_month": 20000},
-    {"supplier_id": "SUP-001", "component_id": "CMP-012", "volume_per_month": 15000},
-    {"supplier_id": "SUP-010", "component_id": "CMP-013", "volume_per_month": 10000},
-    {"supplier_id": "SUP-011", "component_id": "CMP-014", "volume_per_month": 9000},
-    {"supplier_id": "SUP-007", "component_id": "CMP-015", "volume_per_month": 11000},
-    {"supplier_id": "SUP-004", "component_id": "CMP-015", "volume_per_month": 7000},
-    {"supplier_id": "SUP-002", "component_id": "CMP-016", "volume_per_month": 6000},
-    {"supplier_id": "SUP-009", "component_id": "CMP-017", "volume_per_month": 25000},
-    {"supplier_id": "SUP-004", "component_id": "CMP-017", "volume_per_month": 20000},
-    {"supplier_id": "SUP-011", "component_id": "CMP-018", "volume_per_month": 8000},
-    {"supplier_id": "SUP-007", "component_id": "CMP-018", "volume_per_month": 6000},
-    {"supplier_id": "SUP-005", "component_id": "CMP-019", "volume_per_month": 12000},
-    {"supplier_id": "SUP-001", "component_id": "CMP-020", "volume_per_month": 5000},
-    {"supplier_id": "SUP-010", "component_id": "CMP-020", "volume_per_month": 4000},
-]
-
-# Component → Product (USED_IN)
-used_in = [
-    {"component_id": "CMP-003", "product_id": "PRD-001", "quantity": 1},
-    {"component_id": "CMP-004", "product_id": "PRD-001", "quantity": 1},
-    {"component_id": "CMP-007", "product_id": "PRD-001", "quantity": 1},
-    {"component_id": "CMP-011", "product_id": "PRD-001", "quantity": 1},
-    {"component_id": "CMP-013", "product_id": "PRD-001", "quantity": 1},
-    {"component_id": "CMP-014", "product_id": "PRD-001", "quantity": 1},
-    {"component_id": "CMP-016", "product_id": "PRD-001", "quantity": 1},
-    {"component_id": "CMP-019", "product_id": "PRD-001", "quantity": 1},
-    {"component_id": "CMP-001", "product_id": "PRD-002", "quantity": 1},
-    {"component_id": "CMP-004", "product_id": "PRD-002", "quantity": 1},
-    {"component_id": "CMP-007", "product_id": "PRD-002", "quantity": 1},
-    {"component_id": "CMP-010", "product_id": "PRD-002", "quantity": 1},
-    {"component_id": "CMP-012", "product_id": "PRD-002", "quantity": 1},
-    {"component_id": "CMP-014", "product_id": "PRD-002", "quantity": 1},
-    {"component_id": "CMP-016", "product_id": "PRD-002", "quantity": 1},
-    {"component_id": "CMP-019", "product_id": "PRD-002", "quantity": 1},
-    {"component_id": "CMP-001", "product_id": "PRD-003", "quantity": 1},
-    {"component_id": "CMP-004", "product_id": "PRD-003", "quantity": 1},
-    {"component_id": "CMP-007", "product_id": "PRD-003", "quantity": 1},
-    {"component_id": "CMP-010", "product_id": "PRD-003", "quantity": 1},
-    {"component_id": "CMP-012", "product_id": "PRD-003", "quantity": 1},
-    {"component_id": "CMP-015", "product_id": "PRD-003", "quantity": 1},
-    {"component_id": "CMP-017", "product_id": "PRD-003", "quantity": 1},
-    {"component_id": "CMP-003", "product_id": "PRD-004", "quantity": 1},
-    {"component_id": "CMP-005", "product_id": "PRD-004", "quantity": 1},
-    {"component_id": "CMP-009", "product_id": "PRD-004", "quantity": 1},
-    {"component_id": "CMP-011", "product_id": "PRD-004", "quantity": 1},
-    {"component_id": "CMP-013", "product_id": "PRD-004", "quantity": 1},
-    {"component_id": "CMP-015", "product_id": "PRD-004", "quantity": 1},
-    {"component_id": "CMP-017", "product_id": "PRD-004", "quantity": 2},
-    {"component_id": "CMP-002", "product_id": "PRD-005", "quantity": 1},
-    {"component_id": "CMP-005", "product_id": "PRD-005", "quantity": 1},
-    {"component_id": "CMP-009", "product_id": "PRD-005", "quantity": 1},
-    {"component_id": "CMP-011", "product_id": "PRD-005", "quantity": 1},
-    {"component_id": "CMP-020", "product_id": "PRD-005", "quantity": 1},
-    {"component_id": "CMP-015", "product_id": "PRD-005", "quantity": 1},
-    {"component_id": "CMP-017", "product_id": "PRD-005", "quantity": 2},
-    {"component_id": "CMP-001", "product_id": "PRD-006", "quantity": 1},
-    {"component_id": "CMP-006", "product_id": "PRD-006", "quantity": 1},
-    {"component_id": "CMP-008", "product_id": "PRD-006", "quantity": 1},
-    {"component_id": "CMP-010", "product_id": "PRD-006", "quantity": 1},
-    {"component_id": "CMP-012", "product_id": "PRD-006", "quantity": 1},
-    {"component_id": "CMP-015", "product_id": "PRD-006", "quantity": 1},
-    {"component_id": "CMP-003", "product_id": "PRD-007", "quantity": 1},
-    {"component_id": "CMP-006", "product_id": "PRD-007", "quantity": 1},
-    {"component_id": "CMP-008", "product_id": "PRD-007", "quantity": 1},
-    {"component_id": "CMP-010", "product_id": "PRD-007", "quantity": 1},
-    {"component_id": "CMP-012", "product_id": "PRD-007", "quantity": 1},
-    {"component_id": "CMP-018", "product_id": "PRD-008", "quantity": 2},
-    {"component_id": "CMP-015", "product_id": "PRD-008", "quantity": 1},
-    {"component_id": "CMP-001", "product_id": "PRD-009", "quantity": 1},
-    {"component_id": "CMP-018", "product_id": "PRD-009", "quantity": 1},
-    {"component_id": "CMP-015", "product_id": "PRD-009", "quantity": 1},
-    {"component_id": "CMP-014", "product_id": "PRD-009", "quantity": 1},
-    {"component_id": "CMP-006", "product_id": "PRD-010", "quantity": 1},
-    {"component_id": "CMP-015", "product_id": "PRD-010", "quantity": 1},
-    {"component_id": "CMP-017", "product_id": "PRD-010", "quantity": 1},
-]
-
-# Product → Warehouse (STORED_AT)
-stored_at = [
-    {"product_id": "PRD-001", "warehouse_id": "WH-001", "stock_quantity": 3500},
-    {"product_id": "PRD-001", "warehouse_id": "WH-002", "stock_quantity": 1200},
-    {"product_id": "PRD-001", "warehouse_id": "WH-005", "stock_quantity": 800},
-    {"product_id": "PRD-002", "warehouse_id": "WH-001", "stock_quantity": 5000},
-    {"product_id": "PRD-002", "warehouse_id": "WH-004", "stock_quantity": 3000},
-    {"product_id": "PRD-002", "warehouse_id": "WH-003", "stock_quantity": 2000},
-    {"product_id": "PRD-003", "warehouse_id": "WH-004", "stock_quantity": 4000},
-    {"product_id": "PRD-003", "warehouse_id": "WH-001", "stock_quantity": 2500},
-    {"product_id": "PRD-004", "warehouse_id": "WH-003", "stock_quantity": 1800},
-    {"product_id": "PRD-004", "warehouse_id": "WH-004", "stock_quantity": 2200},
-    {"product_id": "PRD-005", "warehouse_id": "WH-001", "stock_quantity": 1500},
-    {"product_id": "PRD-005", "warehouse_id": "WH-003", "stock_quantity": 1000},
-    {"product_id": "PRD-006", "warehouse_id": "WH-002", "stock_quantity": 2000},
-    {"product_id": "PRD-006", "warehouse_id": "WH-005", "stock_quantity": 1500},
-    {"product_id": "PRD-006", "warehouse_id": "WH-006", "stock_quantity": 1800},
-    {"product_id": "PRD-007", "warehouse_id": "WH-006", "stock_quantity": 3000},
-    {"product_id": "PRD-007", "warehouse_id": "WH-002", "stock_quantity": 2500},
-    {"product_id": "PRD-008", "warehouse_id": "WH-001", "stock_quantity": 8000},
-    {"product_id": "PRD-008", "warehouse_id": "WH-004", "stock_quantity": 5000},
-    {"product_id": "PRD-008", "warehouse_id": "WH-005", "stock_quantity": 3000},
-    {"product_id": "PRD-009", "warehouse_id": "WH-003", "stock_quantity": 2000},
-    {"product_id": "PRD-009", "warehouse_id": "WH-002", "stock_quantity": 1500},
-    {"product_id": "PRD-010", "warehouse_id": "WH-004", "stock_quantity": 4000},
-    {"product_id": "PRD-010", "warehouse_id": "WH-006", "stock_quantity": 2500},
-]
-
-# Warehouse → Retailer (SHIPS_TO)
-ships_to = [
-    {"warehouse_id": "WH-001", "retailer_id": "RET-006", "mode": "truck", "cost_per_unit": 1.20, "transit_days": 2},
-    {"warehouse_id": "WH-001", "retailer_id": "RET-001", "mode": "sea", "cost_per_unit": 3.50, "transit_days": 18},
-    {"warehouse_id": "WH-001", "retailer_id": "RET-005", "mode": "sea", "cost_per_unit": 4.00, "transit_days": 12},
-    {"warehouse_id": "WH-002", "retailer_id": "RET-002", "mode": "truck", "cost_per_unit": 0.80, "transit_days": 1},
-    {"warehouse_id": "WH-002", "retailer_id": "RET-005", "mode": "sea", "cost_per_unit": 3.00, "transit_days": 7},
-    {"warehouse_id": "WH-002", "retailer_id": "RET-008", "mode": "sea", "cost_per_unit": 2.50, "transit_days": 5},
-    {"warehouse_id": "WH-003", "retailer_id": "RET-003", "mode": "truck", "cost_per_unit": 1.50, "transit_days": 1},
-    {"warehouse_id": "WH-003", "retailer_id": "RET-007", "mode": "truck", "cost_per_unit": 2.00, "transit_days": 2},
-    {"warehouse_id": "WH-003", "retailer_id": "RET-001", "mode": "air", "cost_per_unit": 8.00, "transit_days": 3},
-    {"warehouse_id": "WH-004", "retailer_id": "RET-004", "mode": "truck", "cost_per_unit": 1.00, "transit_days": 2},
-    {"warehouse_id": "WH-004", "retailer_id": "RET-001", "mode": "air", "cost_per_unit": 7.50, "transit_days": 2},
-    {"warehouse_id": "WH-005", "retailer_id": "RET-006", "mode": "sea", "cost_per_unit": 2.80, "transit_days": 5},
-    {"warehouse_id": "WH-005", "retailer_id": "RET-001", "mode": "air", "cost_per_unit": 6.00, "transit_days": 3},
-    {"warehouse_id": "WH-005", "retailer_id": "RET-002", "mode": "sea", "cost_per_unit": 3.20, "transit_days": 6},
-    {"warehouse_id": "WH-006", "retailer_id": "RET-005", "mode": "truck", "cost_per_unit": 0.90, "transit_days": 2},
-    {"warehouse_id": "WH-006", "retailer_id": "RET-008", "mode": "truck", "cost_per_unit": 0.70, "transit_days": 1},
-]
-
-# ============ SAVE TO JSON ============
-data = {
-    "suppliers": suppliers,
-    "components": components,
-    "products": products,
-    "warehouses": warehouses,
-    "retailers": retailers,
-    "supplies": supplies,
-    "used_in": used_in,
-    "stored_at": stored_at,
-    "ships_to": ships_to,
+PRODUCT_TEMPLATES = {
+    "Smartphone": ["Chipset", "Display", "Battery", "Memory", "Storage", "Camera",
+                   "Connectivity", "Connector", "Sensor"],
+    "Laptop": ["Chipset", "Display", "Battery", "Memory", "Storage", "Connectivity",
+               "Connector", "Cooling", "Audio"],
+    "Tablet": ["Chipset", "Display", "Battery", "Memory", "Storage", "Connectivity", "Connector"],
+    "Wearable": ["Chipset", "Battery", "Sensor", "Connectivity", "Display"],
+    "Earbuds": ["Battery", "Audio", "Connectivity", "Sensor"],
+    "Smart Home": ["Chipset", "Display", "Connectivity", "Connector", "Audio", "Power"],
+    "Monitor": ["Display", "Connector", "Power", "Cooling"],
+    "Console": ["Chipset", "Memory", "Storage", "Cooling", "Connectivity", "Power"],
 }
 
-with open("data/supply_chain_data.json", "w") as f:
-    json.dump(data, f, indent=2)
 
-print("Data generated successfully!")
-print(f"  Suppliers:      {len(suppliers)}")
-print(f"  Components:     {len(components)}")
-print(f"  Products:       {len(products)}")
-print(f"  Warehouses:     {len(warehouses)}")
-print(f"  Retailers:      {len(retailers)}")
-print(f"  SUPPLIES rels:  {len(supplies)}")
-print(f"  USED_IN rels:   {len(used_in)}")
-print(f"  STORED_AT rels: {len(stored_at)}")
-print(f"  SHIPS_TO rels:  {len(ships_to)}")
+# --------------------------------------------------------------------------- #
+# Nodes
+# --------------------------------------------------------------------------- #
+def build_suppliers(n_extra: int) -> list[dict]:
+    curated = [
+        ("ShenZhen MicroTech", "China"), ("Taiwan Semiconductor Co", "Taiwan"),
+        ("Seoul ChipWorks", "South Korea"), ("Mumbai Electronics Ltd", "India"),
+        ("Stuttgart Precision GmbH", "Germany"), ("Osaka Display Corp", "Japan"),
+        ("Bangkok Components", "Thailand"), ("Hanoi Battery Systems", "Vietnam"),
+        ("Guadalajara Assemblies", "Mexico"), ("Penang Silicon Works", "Malaysia"),
+        ("Helsinki Sensor Tech", "Finland"), ("Dongguan Power Systems", "China"),
+    ]
+    suppliers = []
+    seen = set()
+    for i, (name, country) in enumerate(curated, start=1):
+        suppliers.append(_make_supplier(i, name, country))
+        seen.add(name)
 
-# Single-source risk analysis
-supplier_count = Counter(s["component_id"] for s in supplies)
-single_source = [cid for cid, count in supplier_count.items() if count == 1]
-print(f"\n  Single-source components: {len(single_source)}")
-for cid in single_source:
-    comp = next(c for c in components if c["id"] == cid)
-    sup = next(s for s in supplies if s["component_id"] == cid)
-    supplier = next(s for s in suppliers if s["id"] == sup["supplier_id"])
-    print(f"     {comp['name']} <-- only from {supplier['name']}")
+    countries = list(COUNTRY_REGION)
+    idx = len(curated)
+    while len(suppliers) < len(curated) + n_extra:
+        country = random.choice(countries)
+        city = random.choice(CITY_BY_COUNTRY[country])
+        name = f"{city} {random.choice(SUPPLIER_SUFFIX)}"
+        if name in seen:
+            continue
+        seen.add(name)
+        idx += 1
+        suppliers.append(_make_supplier(idx, name, country))
+    return suppliers
+
+
+def _make_supplier(i: int, name: str, country: str) -> dict:
+    on_time = random.randint(80, 99)
+    tier = 1 if on_time >= 95 else (2 if on_time >= 88 else 3)
+    return {
+        "id": f"SUP-{i:03d}", "name": name, "country": country,
+        "region": COUNTRY_REGION[country], "tier": tier,
+        "on_time_delivery_pct": on_time,
+        "lead_time_days": random.randint(7, 30),
+        "lead_time_variance": random.randint(1, 8),
+    }
+
+
+def build_components(target: int) -> list[dict]:
+    components = []
+    seen = set()
+    i = 0
+    while len(components) < target:
+        category = COMPONENT_CATEGORIES[i % len(COMPONENT_CATEGORIES)]
+        template = random.choice(COMPONENT_NAMES[category])
+        name = template.format(
+            n=random.choice([8, 12, 16, 18, 24, 50, 64, 100, 200, 256, 512]),
+            s=random.choice([6.1, 6.7, 10.9, 13.3, 15.6, 27.0]),
+        )
+        i += 1
+        if name in seen:
+            continue
+        seen.add(name)
+        components.append({
+            "id": f"CMP-{len(components) + 1:03d}", "name": name, "category": category,
+            "unit_cost": round(random.uniform(2.0, 90.0), 2),
+            "criticality": "high" if category in CRITICAL_CATEGORIES
+            else random.choice(["medium", "low"]),
+            "alt_supplier_count": 0,  # backfilled after SUPPLIES is built
+        })
+    return components
+
+
+def build_products(n_extra: int) -> list[dict]:
+    curated = [
+        ("Galaxy Ultra X", "Smartphone", 1199.99), ("iPhone 16 Pro", "Smartphone", 1099.00),
+        ("Pixel 9", "Smartphone", 799.00), ("ProBook Laptop 15", "Laptop", 1349.00),
+        ("AirSlim Ultrabook", "Laptop", 1599.00), ("Tab Pro 11", "Tablet", 649.00),
+        ("StudyPad Basic", "Tablet", 329.00), ("BudsPro Max", "Earbuds", 249.00),
+        ("SmartWatch Ultra", "Wearable", 449.00), ("HomeHub Display", "Smart Home", 199.00),
+    ]
+    products = [
+        {"id": f"PRD-{i:03d}", "name": name, "category": cat, "price": price}
+        for i, (name, cat, price) in enumerate(curated, start=1)
+    ]
+    extra_names = [
+        ("Galaxy A55", "Smartphone"), ("iPhone 16", "Smartphone"), ("Pixel 9 Pro", "Smartphone"),
+        ("Nova Edge", "Smartphone"), ("ProBook Laptop 17", "Laptop"), ("GamerBook X", "Laptop"),
+        ("AirSlim Mini", "Laptop"), ("Tab Lite 10", "Tablet"), ("Tab Ultra 14", "Tablet"),
+        ("BudsLite", "Earbuds"), ("SmartWatch SE", "Wearable"), ("FitBand 7", "Wearable"),
+        ("HomeHub Mini", "Smart Home"), ("Vision Monitor 27", "Monitor"),
+        ("Vision Monitor 32", "Monitor"), ("PlayConsole 5", "Console"),
+    ]
+    for j, (name, cat) in enumerate(extra_names[:n_extra], start=len(products) + 1):
+        base = {"Smartphone": 699, "Laptop": 1199, "Tablet": 399, "Wearable": 199,
+                "Earbuds": 129, "Smart Home": 149, "Monitor": 349, "Console": 499}[cat]
+        products.append({"id": f"PRD-{j:03d}", "name": name, "category": cat,
+                         "price": round(base + random.uniform(-50, 250), 2)})
+    return products
+
+
+def build_warehouses() -> list[dict]:
+    base = [
+        ("ShenZhen Hub", "Shenzhen", "China", 50000), ("Dubai Logistics Center", "Dubai", "UAE", 30000),
+        ("Rotterdam Port Warehouse", "Rotterdam", "Netherlands", 40000),
+        ("LA Distribution Center", "Los Angeles", "USA", 45000),
+        ("Singapore Free Trade Zone", "Singapore", "Singapore", 25000),
+        ("Mumbai Central Depot", "Mumbai", "India", 20000),
+        ("Frankfurt Air Cargo Hub", "Frankfurt", "Germany", 35000),
+        ("Sao Paulo Depot", "Sao Paulo", "Brazil", 18000),
+        ("Tokyo Bay Warehouse", "Tokyo", "Japan", 28000),
+        ("Memphis Freight Center", "Memphis", "USA", 42000),
+    ]
+    warehouses = []
+    for i, (name, city, country, cap) in enumerate(base, start=1):
+        # WH-007 is an intentional bottleneck: near capacity.
+        util = 96 if i == 7 else random.randint(45, 88)
+        warehouses.append({"id": f"WH-{i:03d}", "name": name, "city": city,
+                           "country": country, "capacity": cap, "utilization_pct": util})
+    return warehouses
+
+
+def build_retailers() -> list[dict]:
+    base = [
+        ("TechMart Online", "Global", "Global", "E-commerce"),
+        ("ElectroCity Dubai Mall", "Dubai", "UAE", "Physical Store"),
+        ("Berlin Electronics Hub", "Berlin", "Germany", "Physical Store"),
+        ("BestBuy US", "Multiple", "USA", "Chain Store"),
+        ("Flipkart India", "Bengaluru", "India", "E-commerce"),
+        ("JD.com", "Beijing", "China", "E-commerce"),
+        ("Currys UK", "London", "UK", "Chain Store"),
+        ("Croma India", "Mumbai", "India", "Chain Store"),
+        ("Amazon Japan", "Tokyo", "Japan", "E-commerce"),
+        ("MediaMarkt EU", "Amsterdam", "Netherlands", "Chain Store"),
+        ("Magazine Luiza", "Sao Paulo", "Brazil", "Chain Store"),
+        ("Newegg US", "Los Angeles", "USA", "E-commerce"),
+    ]
+    return [{"id": f"RET-{i:03d}", "name": name, "city": city, "country": country, "type": rtype}
+            for i, (name, city, country, rtype) in enumerate(base, start=1)]
+
+
+# --------------------------------------------------------------------------- #
+# Relationships
+# --------------------------------------------------------------------------- #
+def build_supplies(suppliers: list[dict], components: list[dict]) -> list[dict]:
+    # Give each supplier 1-3 specialty categories.
+    specialties = {
+        s["id"]: set(random.sample(COMPONENT_CATEGORIES, k=random.randint(1, 3)))
+        for s in suppliers
+    }
+    by_category = defaultdict(list)
+    for s in suppliers:
+        for cat in specialties[s["id"]]:
+            by_category[cat].append(s["id"])
+
+    # A handful of critical components are deliberately single-sourced.
+    high = [c for c in components if c["criticality"] == "high"]
+    single_source = set(random.sample([c["id"] for c in high], k=min(6, len(high))))
+    # Guarantee a hero single-source: a Chipset supplied ONLY by Taiwan Semiconductor.
+    taiwan = next(s for s in suppliers if s["name"] == "Taiwan Semiconductor Co")
+    hero = next(c for c in components if c["category"] == "Chipset")
+    single_source.add(hero["id"])
+
+    supplies = []
+    for c in components:
+        candidates = by_category.get(c["category"]) or [s["id"] for s in suppliers]
+        if c["id"] == hero["id"]:
+            chosen = [taiwan["id"]]
+        elif c["id"] in single_source:
+            chosen = [random.choice(candidates)]
+        else:
+            k = min(len(candidates), random.randint(2, 4))
+            chosen = random.sample(candidates, k=k)
+        sup_by_id = {s["id"]: s for s in suppliers}
+        for sup_id in chosen:
+            sup = sup_by_id[sup_id]
+            supplies.append({
+                "supplier_id": sup_id, "component_id": c["id"],
+                "volume_per_month": random.randint(2000, 25000),
+                # Per-supplier price varies around the component's base cost.
+                "unit_price": round(c["unit_cost"] * random.uniform(0.9, 1.2), 2),
+                "lead_time_days": max(3, sup["lead_time_days"] + random.randint(-3, 5)),
+            })
+    return supplies, hero
+
+
+def build_used_in(products: list[dict], components: list[dict]) -> list[dict]:
+    by_category = defaultdict(list)
+    for c in components:
+        by_category[c["category"]].append(c["id"])
+
+    used_in = []
+    for p in products:
+        template = PRODUCT_TEMPLATES[p["category"]]
+        for cat in template:
+            pool = by_category.get(cat)
+            if not pool:
+                continue
+            for cid in random.sample(pool, k=min(len(pool), random.randint(1, 2))):
+                used_in.append({"component_id": cid, "product_id": p["id"],
+                                "quantity": random.randint(1, 2)})
+    return used_in
+
+
+def wire_hero_into_flagships(used_in: list[dict], hero: dict, products: list[dict]) -> None:
+    """Force the single-source hero chipset into several flagship products."""
+    flagships = [p for p in products if p["category"] in ("Smartphone", "Tablet")][:5]
+    existing = {(u["component_id"], u["product_id"]) for u in used_in}
+    for p in flagships:
+        if (hero["id"], p["id"]) not in existing:
+            used_in.append({"component_id": hero["id"], "product_id": p["id"], "quantity": 1})
+
+
+def build_stored_at(products: list[dict], warehouses: list[dict]) -> list[dict]:
+    stored_at = []
+    for p in products:
+        for w in random.sample(warehouses, k=random.randint(2, 5)):
+            stored_at.append({"product_id": p["id"], "warehouse_id": w["id"],
+                              "stock_quantity": random.randint(200, 8000)})
+    return stored_at
+
+
+def build_ships_to(warehouses: list[dict], retailers: list[dict]) -> list[dict]:
+    modes = [("truck", (0.7, 2.0), (1, 3)), ("sea", (2.5, 4.5), (5, 20)),
+             ("air", (6.0, 9.0), (2, 4))]
+    ships_to = []
+    seen = set()
+    for w in warehouses:
+        for r in random.sample(retailers, k=random.randint(2, 4)):
+            if (w["id"], r["id"]) in seen:
+                continue
+            seen.add((w["id"], r["id"]))
+            mode, (clo, chi), (tlo, thi) = random.choice(modes)
+            ships_to.append({"warehouse_id": w["id"], "retailer_id": r["id"], "mode": mode,
+                             "cost_per_unit": round(random.uniform(clo, chi), 2),
+                             "transit_days": random.randint(tlo, thi)})
+    # Intentional bottleneck: RET-005 (Flipkart India) served by exactly one warehouse.
+    ships_to = [s for s in ships_to if s["retailer_id"] != "RET-005"]
+    ships_to.append({"warehouse_id": "WH-006", "retailer_id": "RET-005", "mode": "truck",
+                     "cost_per_unit": 0.90, "transit_days": 2})
+    return ships_to
+
+
+# --------------------------------------------------------------------------- #
+# Assemble + save
+# --------------------------------------------------------------------------- #
+def main() -> None:
+    suppliers = build_suppliers(n_extra=36)      # ~48
+    components = build_components(target=70)
+    products = build_products(n_extra=14)        # ~24
+    warehouses = build_warehouses()
+    retailers = build_retailers()
+
+    supplies, hero = build_supplies(suppliers, components)
+    used_in = build_used_in(products, components)
+    wire_hero_into_flagships(used_in, hero, products)
+    stored_at = build_stored_at(products, warehouses)
+    ships_to = build_ships_to(warehouses, retailers)
+
+    # Backfill alt_supplier_count = number of alternative suppliers (0 = single source).
+    supplier_count = Counter(s["component_id"] for s in supplies)
+    for c in components:
+        c["alt_supplier_count"] = max(0, supplier_count.get(c["id"], 0) - 1)
+
+    data = {
+        "suppliers": suppliers, "components": components, "products": products,
+        "warehouses": warehouses, "retailers": retailers, "supplies": supplies,
+        "used_in": used_in, "stored_at": stored_at, "ships_to": ships_to,
+    }
+
+    out_path = os.path.join(os.path.dirname(__file__), "supply_chain_data.json")
+    with open(out_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+    print("Data generated successfully!")
+    for key in ("suppliers", "components", "products", "warehouses", "retailers",
+                "supplies", "used_in", "stored_at", "ships_to"):
+        print(f"  {key:<12} {len(data[key])}")
+
+    single_source = [cid for cid, n in supplier_count.items() if n == 1]
+    print(f"\n  Single-source components: {len(single_source)}")
+    hero_supplier = next(s for s in supplies if s["component_id"] == hero["id"])
+    supplier_name = next(s["name"] for s in suppliers if s["id"] == hero_supplier["supplier_id"])
+    print(f"  Hero single-source: {hero['name']} <-- only from {supplier_name}")
+
+
+if __name__ == "__main__":
+    main()
