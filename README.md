@@ -130,6 +130,12 @@ pytest -q         # 37 tests; LLM + Neo4j are mocked, no services required
 The suite includes the key security check: a prompt-injected write request is
 refused by the guard and never reaches the database.
 
+## Deployment
+
+Frontend deploys to Vercel (root directory `frontend`, set `NEXT_PUBLIC_API_URL`);
+the FastAPI + Neo4j backend deploys separately (Railway/Render/etc.). Full
+step-by-step in [DEPLOY.md](DEPLOY.md).
+
 ## Security Notes
 
 - The chat path uses a read-only Cypher guard **and** a READ-access session.

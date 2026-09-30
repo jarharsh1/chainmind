@@ -9,6 +9,8 @@ async function getJSON(path) {
   return res.json();
 }
 
+export const fetchHealth = () => getJSON("/health");
+
 export const fetchFilters = () => getJSON("/api/filters");
 
 export const fetchNode = (id) => getJSON(`/api/node/${encodeURIComponent(id)}`);
